@@ -29,3 +29,9 @@ hickle >= 2.1.0
 TensorFlow==1.13.1
 
 Keras==2.1.4
+
+## Results
+![image](https://user-images.githubusercontent.com/31497898/145934083-ed0ffaba-332a-45b7-9be0-4cdd18e5e22e.png)
+![image](https://user-images.githubusercontent.com/31497898/145934057-d06d9db5-9985-46a6-8512-71bf956f3dfb.png)
+![image](https://user-images.githubusercontent.com/31497898/145934119-90588832-c1b6-4a04-b823-c2a7ddabcd80.png)
+
