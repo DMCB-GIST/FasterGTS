@@ -229,16 +229,24 @@ class State_trainable_RNNs():
 
         avg_loss = 0.0
         smis = self.get_best_smis()
-        batch = min(self.train_batch,len(self.que.queue))
+        batch = min(self.train_batch,len(self.que.queue)) #int(len(self.que.queue)/2))
         rand_smis = random.choices(population=smis, k=batch)
 
         self.trainable_generator.train()
+        #self.trainable_generator.optimizer.zero_grad()
 
         for smi in rand_smis:
             inp, target = self.get_input(smi)
+            #avg_loss += self.get_loss(inp, target)
             avg_loss += self.trainable_generator.train_step(inp, target)
 
         avg_loss /= batch
+
+        #avg_loss.backward()
+        #self.trainable_generator.optimizer.step()
+
+        #avg_loss = avg_loss.item()
+        #print('avg_loss ',avg_loss)
 
         return avg_loss
 
@@ -461,13 +469,18 @@ class State_trainable_GPT():
     def get_smis(self,num_smis):
         smis = []
         while len(smis) != num_smis:
-            smi = self.generator.get_samples(self.stoi,self.itos, n_samples = 1, current_molecule='<')[0]
-            if self.check_valid_smi(smi[1:-1]):
-                smis.append(smi)
+            try:
+                smi = self.generator.get_samples(self.stoi,self.itos, n_samples = 1, current_molecule='<')
+                smi = smi[0]
+                if self.check_valid_smi(smi[1:-1]):
+                    smis.append(smi)
+            except:
+                print('error')
+                print(smi)
 
         return smis
 
-    def GA(self):
+    def GA(self,save_all = False):
         smis = random.choices(self.get_best_smis(), k= self.num_GA)
         smis += self.get_smis(self.num_GA)
         smis = shuffle(smis)
@@ -481,10 +494,14 @@ class State_trainable_GPT():
         for smi in new_smis:
             IC50, z_score, reward = self.cal_reward(smi)
 
+            if reward > 0 and save_all:
+                smis.append(smi)
+                rewards.append(reward)
+
             if reward > 1:
                 update = self.update_que(reward, '<'+smi+'>')
 
-                if update:
+                if update and not(save_all):
                     smis.append(smi)
                     rewards.append(reward)
 
@@ -534,19 +551,24 @@ class State_trainable_GPT():
         return float(np.mean(losses))
 
 
-    def self_train(self):
+    def self_train(self,save_all = False):
         smis = []
         rewards = []
         samples = self.getSamples('<',self.num_self)
         for smi in samples:
             IC50,z_score,reward = self.cal_reward(smi[1:-1])
 
+            if reward >0 and save_all:
+                smis.append(smi[1:-1])
+                rewards.append(reward)
+
             if reward > 1:
                 update = self.update_que(reward, smi)
 
-                if update:
+                if update and not(save_all):
                     smis.append(smi)
                     rewards.append(reward)
+
 
         return smis, rewards
 
@@ -626,6 +648,7 @@ class State_trainable_GPT():
             if reward > NO_REWARD:
                 total_pred_reward += reward
                 valid_count +=1
+                #self.total_sample_list.append(sample+str(round(IC50,4))+'>'+str(z_score))
 
                 if reward > 1:
                     samples.append(sample[1:-1])
@@ -646,7 +669,7 @@ class State_trainable_GPT():
 
 class MCTS():
     def __init__(self, explorationConstant=1 / math.sqrt(2), State=None,img_save_dir = './'
-                 ,file_save_dir=None,self_train = False, GA = False):
+                 ,file_save_dir=None,self_train = False, GA = False, trainable = False):
 
         self.explorationConstant = explorationConstant
         self.root = TreeNode('<')
@@ -662,6 +685,7 @@ class MCTS():
 
         self.self_train = self_train
         self.GA = GA
+        self.trainable = trainable
 
     def load_dict(self,file_dir):
         loaded_dict = np.load(file_dir,allow_pickle='TRUE').item()
@@ -730,6 +754,15 @@ class MCTS():
         for self.root.nth in range(start,end+1):
             self.select(numActions=numActions)
 
+            if self.self_train:
+                try:
+                    smis, rewards = self.State.self_train()
+                    if len(smis) > 0:
+                        [self.make_shortway(i[0],i[1]) for i in list(zip(smis,rewards))]
+                        print('############### Num of Self trained samples ################ ', len(smis))
+                except:
+                    print("@@@@@@@@@@@ Error in self train @@@@@@@@@@@@@")
+
             if self.GA:
                 try:
                     smis, rewards = self.State.GA()
@@ -739,7 +772,7 @@ class MCTS():
                 except:
                     print("@@@@@@@@@@@ Error in GA @@@@@@@@@@@@@")
 
-            if self.self_train:
+            if self.trainable:
                 try:
                     avg_loss = self.State.step()
                     self.loss.append(avg_loss)
@@ -987,280 +1020,6 @@ class MCTS():
             node.numVisits += 1
             node.valid_count += valid_count
             node = node.parent
-
-
-
-
-
-class State_RNNs():
-    def __init__(self,generator, predictor,adj_fp_fun,
-                 mutation_feature,gexpr_feature,methylation_feature,
-                 cell_lines,target_cell,thres_ic = 0,thres_z = -1,numSample=10, alpha = 1, beta = 2,
-                 RL_checkpoint=None,SL_checkpoint=None,data=None):
-        self.generator = generator
-        self.predictor = predictor
-        self.numSample = numSample
-        self.data = data
-        self.adj_fp_fun = adj_fp_fun
-
-        self.end_token = '>'
-
-        self.RL_checkpoint = RL_checkpoint
-        self.SL_checkpoint = SL_checkpoint
-        self.total_sample_list = []
-
-        self.total_reward = 0
-        self.winning_count = 0
-        self.valid_count = 1
-        self.thres_ic = thres_ic
-        self.thres_z = thres_z
-        self.target_cell = target_cell
-
-        self.cell_lines = cell_lines
-
-        self.x_mutation = mutation_feature.loc[self.target_cell]
-        self.x_mutation = np.array(self.x_mutation).reshape(1,1,self.x_mutation.shape[0],1)
-
-
-        self.x_expr = gexpr_feature.loc[self.target_cell]
-        self.x_expr = np.array(self.x_expr).reshape(1,self.x_expr.shape[0])
-
-        self.x_methylation = methylation_feature.loc[self.target_cell]
-        self.x_methylation = np.array(self.x_methylation).reshape(1,self.x_methylation.shape[0])
-
-        self.test_x_mutation = mutation_feature.loc[self.cell_lines]
-        self.test_x_mutation = np.array(self.test_x_mutation).reshape(self.test_x_mutation.shape[0],1,self.test_x_mutation.shape[1],1)
-
-        self.test_x_expr = gexpr_feature.loc[self.cell_lines]
-        self.test_x_expr =  np.array(self.test_x_expr)
-
-        self.test_x_methylation = methylation_feature.loc[self.cell_lines]
-        self.test_x_methylation = np.array(self.test_x_methylation)
-
-        self.alpha = alpha
-        self.beta = beta
-
-    def getUniqueList(self):
-        return list(set(self.total_sample_list))
-
-    def getPossibleActions(self,current_molecule,numSimul=10):
-        action_list = self.generator.get_next_actions(self.data, current_molecule=current_molecule,numActions=numSimul)
-        return action_list
-
-    def getSampleList(self,current_molecule='<'):
-
-        if current_molecule[-1] == self.end_token:
-            return [current_molecule]
-
-        self.generator.load_model(self.RL_checkpoint)
-        sample_list = self.getSamples(current_molecule,self.numSample)
-        self.generator.load_model(self.SL_checkpoint)
-
-        return sample_list
-
-    def getSamples(self,current_molecule,num_samples):
-        return self.generator.new_simulation(self.data, current_molecule=current_molecule, numSimul = num_samples)
-
-    def reward(self,IC50,z_score):
-        if z_score<=self.thres_z and IC50<= self.thres_ic:
-            return np.exp(self.alpha*(-z_score+self.thres_z))+self.beta*np.log(-IC50+1+self.thres_ic)
-        else:
-            return 1
-
-    def getReward(self,sample_list):
-        total_pred_reward = 0
-        valid_count = 0
-        winning_count = 0
-        bestReward = NO_REWARD
-        bestSample = ""
-        samples = []
-        for sample in sample_list:
-            try:
-
-                mol = Chem.MolFromSmiles(sample[1:-1])
-                adj_fp_data =  self.adj_fp_fun.featurize([mol])
-                single_adj_data = adj_fp_data[0][0].reshape(1,100,100)
-                single_drug_feat_data = adj_fp_data[0][1].reshape(1,100,75)
-
-                adj_data = np.tile(single_adj_data,[self.x_mutation.shape[0],1,1])
-                drug_feat_data = np.tile(single_drug_feat_data,[self.x_mutation.shape[0],1,1])
-
-                input_data = [drug_feat_data,adj_data, self.x_mutation,self.x_expr,self.x_methylation]
-
-                IC50 = self.predictor.predict(input_data)
-
-                IC50 = np.average(list(IC50))
-
-                adj_data = np.tile(single_adj_data,[self.test_x_mutation.shape[0],1,1])
-                drug_feat_data = np.tile(single_drug_feat_data,[self.test_x_mutation.shape[0],1,1])
-
-                input_data = [drug_feat_data,adj_data, self.test_x_mutation,self.test_x_expr,self.test_x_methylation]
-
-                test_pred_value = self.predictor.predict(input_data)
-                test_pred_value = test_pred_value.reshape(test_pred_value.shape[0])
-                mean = np.mean(test_pred_value)
-                std = np.std(test_pred_value)
-
-                z_score = round((IC50-mean)/std,2)
-
-                temp_reward = self.reward(IC50,z_score)
-                total_pred_reward += temp_reward
-                self.total_reward += temp_reward
-                self.total_sample_list.append(sample+str(round(IC50,4))+'>'+str(z_score))
-
-
-                if IC50 <= self.thres_ic and z_score <= self.thres_z:
-                    #print("IC50 ",IC50)
-                    #print("z_score ",z_score)
-
-                    samples.append(sample[1:-1])
-                    winning_count += 1
-                    self.winning_count += 1
-
-                valid_count +=1
-                self.valid_count +=1
-                if temp_reward > bestReward:
-                    bestReward = temp_reward
-                    bestSample = sample
-            except:
-                pass
-
-        return total_pred_reward, valid_count, bestReward, bestSample, winning_count, samples
-
-
-
-class State_GPT():
-    def __init__(self,generator, predictor,adj_fp_fun,stoi,itos,
-                 mutation_feature,gexpr_feature,methylation_feature,
-                 cell_lines,target_cell,thres_ic = 0,thres_z = -1,numSample=10, alpha = 1, beta = 2,
-                 RL_checkpoint=None,SL_checkpoint=None):
-        self.generator = generator
-        self.predictor = predictor
-        self.numSample = numSample
-        self.adj_fp_fun = adj_fp_fun
-
-        self.stoi = stoi
-        self.itos = itos
-
-        self.end_token = '>'
-
-        self.RL_checkpoint = RL_checkpoint
-        self.SL_checkpoint = SL_checkpoint
-        self.total_sample_list = []
-
-        self.total_reward = 0
-        self.winning_count = 0
-        self.valid_count = 1
-        self.thres_ic = thres_ic
-        self.thres_z = thres_z
-        self.target_cell = target_cell
-
-        self.cell_lines = cell_lines
-
-        self.x_mutation = mutation_feature.loc[self.target_cell]
-        self.x_mutation = np.array(self.x_mutation).reshape(1,1,self.x_mutation.shape[0],1)
-
-
-        self.x_expr = gexpr_feature.loc[self.target_cell]
-        self.x_expr = np.array(self.x_expr).reshape(1,self.x_expr.shape[0])
-
-        self.x_methylation = methylation_feature.loc[self.target_cell]
-        self.x_methylation = np.array(self.x_methylation).reshape(1,self.x_methylation.shape[0])
-
-        self.test_x_mutation = mutation_feature.loc[self.cell_lines]
-        self.test_x_mutation = np.array(self.test_x_mutation).reshape(self.test_x_mutation.shape[0],1,self.test_x_mutation.shape[1],1)
-
-        self.test_x_expr = gexpr_feature.loc[self.cell_lines]
-        self.test_x_expr =  np.array(self.test_x_expr)
-
-        self.test_x_methylation = methylation_feature.loc[self.cell_lines]
-        self.test_x_methylation = np.array(self.test_x_methylation)
-
-        self.alpha = alpha
-        self.beta = beta
-
-    def getUniqueList(self):
-        return list(set(self.total_sample_list))
-
-    def getPossibleActions(self,current_molecule='<',numSimul=10):
-        action_list = self.generator.get_next_actions(self.stoi,self.itos,numSimul,current_molecule=current_molecule)
-        return action_list
-
-    def getSampleList(self,current_molecule='<'):
-
-        if current_molecule[-1] == self.end_token:
-            return [current_molecule]
-
-        self.generator.load_model(self.RL_checkpoint)
-        sample_list = self.getSamples(current_molecule,self.numSample)
-        self.generator.load_model(self.SL_checkpoint)
-
-        return sample_list
-
-    def getSamples(self,current_molecule,num_samples):
-        return self.generator.get_samples(self.stoi,self.itos,num_samples,current_molecule=current_molecule)
-
-    def reward(self,IC50,z_score):
-        if z_score<=self.thres_z and IC50<= self.thres_ic:
-            return np.exp(self.alpha*(-z_score+self.thres_z))+self.beta*np.log(-IC50+1+self.thres_ic)
-        else:
-            return 1
-
-    def getReward(self,sample_list):
-        total_pred_reward = 0
-        valid_count = 0
-        winning_count = 0
-        bestReward = NO_REWARD
-        bestSample = ""
-        samples = []
-        for sample in sample_list:
-            try:
-                mol = Chem.MolFromSmiles(sample[1:-1])
-                adj_fp_data =  self.adj_fp_fun.featurize([mol])
-                single_adj_data = adj_fp_data[0][0].reshape(1,100,100)
-                single_drug_feat_data = adj_fp_data[0][1].reshape(1,100,75)
-
-                adj_data = np.tile(single_adj_data,[self.x_mutation.shape[0],1,1])
-                drug_feat_data = np.tile(single_drug_feat_data,[self.x_mutation.shape[0],1,1])
-
-                input_data = [drug_feat_data,adj_data, self.x_mutation,self.x_expr,self.x_methylation]
-
-                IC50 = self.predictor.predict(input_data)
-
-                IC50 = np.average(list(IC50))
-
-                adj_data = np.tile(single_adj_data,[self.test_x_mutation.shape[0],1,1])
-                drug_feat_data = np.tile(single_drug_feat_data,[self.test_x_mutation.shape[0],1,1])
-
-                input_data = [drug_feat_data,adj_data, self.test_x_mutation,self.test_x_expr,self.test_x_methylation]
-
-                test_pred_value = self.predictor.predict(input_data)
-                test_pred_value = test_pred_value.reshape(test_pred_value.shape[0])
-                mean = np.mean(test_pred_value)
-                std = np.std(test_pred_value)
-
-                z_score = round((IC50-mean)/std,2)
-
-                temp_reward = self.reward(IC50,z_score)
-                total_pred_reward += temp_reward
-                self.total_reward += temp_reward
-                valid_count +=1
-                self.valid_count +=1
-
-                if IC50 <= self.thres_ic and z_score <= self.thres_z:
-                    self.total_sample_list.append(sample+str(round(IC50,4))+'>'+str(z_score))
-                    samples.append(sample[1:-1])
-                    winning_count += 1
-                    self.winning_count += 1
-
-
-                if temp_reward > bestReward:
-                    bestReward = temp_reward
-                    bestSample = sample
-            except:
-                pass
-
-        return total_pred_reward, valid_count, bestReward, bestSample, winning_count, samples
 
 
 class TreeNode(AnyNode):
