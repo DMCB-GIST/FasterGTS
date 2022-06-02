@@ -40,16 +40,6 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 #os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4"
 device = torch.device(1)
 
-index_list = [1,]
-#index_list = [3]
-#index_list = [5]
-index_list = [7]
-index_list = [9]
-index_list = [10,11]
-#index_list = [13]
-#index_list = [15]
-index_list = [17]
-index_list = [18,19]
 index_list = [20]
 
 Drug_info_file = '/NAS_Storage1/leo8544/CanDIS/data/GDSC/1.Drug_listMon Jun 24 09_00_55 2019.csv'
@@ -133,8 +123,8 @@ for index in index_list:
     
     # Initialize neptune
     run = neptune.init(
-    project="sejin8544/deep-molecular-optimization",
-    api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIxOTJmYWUwNC1lZDhkLTQwZjEtODNhMC03NjI2NmExZDU0NjQifQ==",
+    project="./deep-molecular-optimization",
+    api_token="...",
     )
  
     run["parameters"] = vars(args)
